@@ -28,6 +28,12 @@
 #define SDL_CODE_GAMECONTROLLER_SET_MOTION_EVENT_STATE 103
 #define SDL_CODE_GAMECONTROLLER_SET_CONTROLLER_LED 104
 #define SDL_CODE_GAMECONTROLLER_SET_ADAPTIVE_TRIGGERS 105
+#define SDL_CODE_GAMECONTROLLER_RAW_HID_OUTPUT 106
+
+struct RawHidOutputReport {
+    uint16_t length;
+    uint8_t data[LI_MAX_RAW_HID_REPORT_SIZE];
+};
 
 #include <openssl/rand.h>
 
@@ -60,7 +66,8 @@ CONNECTION_LISTENER_CALLBACKS Session::k_ConnCallbacks = {
     Session::clRumbleTriggers,
     Session::clSetMotionEventState,
     Session::clSetControllerLED,
-    Session::clSetAdaptiveTriggers
+    Session::clSetAdaptiveTriggers,
+    Session::clRawHidOutput
 };
 
 Session* Session::s_ActiveSession;
@@ -272,6 +279,32 @@ void Session::clSetAdaptiveTriggers(uint16_t controllerNumber, uint8_t eventFlag
 
     setControllerLEDEvent.user.data2 = (void *) state;
     SDL_PushEvent(&setControllerLEDEvent);
+}
+
+void Session::clRawHidOutput(uint16_t controllerNumber, const uint8_t* report, uint16_t reportLength)
+{
+    // We push an event for the main thread to handle in order to properly synchronize
+    // with the removal of game controllers that could result in our game controller
+    // going away during this callback.
+    if (reportLength > LI_MAX_RAW_HID_REPORT_SIZE) {
+        return;
+    }
+
+    RawHidOutputReport* output = (RawHidOutputReport*)SDL_malloc(sizeof(RawHidOutputReport));
+    if (output == nullptr) {
+        return;
+    }
+    output->length = reportLength;
+    SDL_memcpy(output->data, report, reportLength);
+
+    SDL_Event rawHidOutputEvent = {};
+    rawHidOutputEvent.type = SDL_USEREVENT;
+    rawHidOutputEvent.user.code = SDL_CODE_GAMECONTROLLER_RAW_HID_OUTPUT;
+    rawHidOutputEvent.user.data1 = (void*)(uintptr_t)controllerNumber;
+    rawHidOutputEvent.user.data2 = output;
+    if (SDL_PushEvent(&rawHidOutputEvent) <= 0) {
+        SDL_free(output);
+    }
 }
 
 
@@ -2050,6 +2083,13 @@ void Session::exec()
                 m_InputHandler->setAdaptiveTriggers((uint16_t)(uintptr_t)event.user.data1,
                                                     (DualSenseOutputReport *)event.user.data2);
                 break;
+            case SDL_CODE_GAMECONTROLLER_RAW_HID_OUTPUT: {
+                RawHidOutputReport* output = (RawHidOutputReport*)event.user.data2;
+                m_InputHandler->rawHidOutput((uint16_t)(uintptr_t)event.user.data1,
+                                             output->data, output->length);
+                SDL_free(output);
+                break;
+            }
             default:
                 SDL_assert(false);
             }
