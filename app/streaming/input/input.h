@@ -36,6 +36,16 @@ struct GamepadState {
     short lsX, lsY;
     short rsX, rsY;
     unsigned char lt, rt;
+
+#if SDL_VERSION_ATLEAST(2, 24, 0)
+    // Set while this gamepad's raw HID reports are forwarded to the host
+    // instead of its gamepad state (see startRawHidPassthrough())
+    SDL_hid_device* rawHidDevice;
+    SDL_Thread* rawHidThread;
+    SDL_atomic_t rawHidStop;
+    uint16_t rawHidVendorId;
+    uint16_t rawHidProductId;
+#endif
 };
 
 
@@ -128,6 +138,8 @@ public:
 
     void setAdaptiveTriggers(uint16_t controllerNumber, DualSenseOutputReport *report);
 
+    void rawHidOutput(uint16_t controllerNumber, const uint8_t* report, uint16_t reportLength);
+
     void handleTouchFingerEvent(SDL_TouchFingerEvent* event);
 
     int getAttachedGamepadMask();
@@ -177,6 +189,13 @@ private:
     void sendGamepadState(GamepadState* state);
 
     void sendGamepadBatteryState(GamepadState* state, SDL_JoystickPowerLevel level);
+
+    bool startRawHidPassthrough(GamepadState* state, uint16_t vendorId, uint16_t productId);
+
+    void stopRawHidPassthrough(GamepadState* state);
+
+    static
+    int rawHidReaderThread(void* context);
 
     void handleAbsoluteFingerEvent(SDL_TouchFingerEvent* event);
 

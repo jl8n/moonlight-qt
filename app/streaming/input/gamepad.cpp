@@ -10,6 +10,18 @@
 // How long the Start button must be pressed to toggle mouse emulation
 #define MOUSE_EMULATION_LONG_PRESS_TIME 750
 
+// True while the gamepad's raw HID reports go to the host in place of its gamepad
+// state, so none of its standard controller events may be sent.
+static bool isForwardingRawHid(const GamepadState* state)
+{
+#if SDL_VERSION_ATLEAST(2, 24, 0)
+    return state->rawHidDevice != nullptr;
+#else
+    Q_UNUSED(state);
+    return false;
+#endif
+}
+
 // How long between polling the gamepad to send virtual mouse input
 #define MOUSE_EMULATION_POLLING_INTERVAL 50
 
@@ -56,6 +68,10 @@ void SdlInputHandler::sendGamepadState(GamepadState* state)
 {
     SDL_assert(m_GamepadMask == 0x1 || m_MultiController);
 
+    if (isForwardingRawHid(state)) {
+        return;
+    }
+
     // Handle Select+PS as the clickpad button on PS4/5 controllers without a clickpad mapping
     int buttons = state->buttons;
     if (state->clickpadButtonEmulationEnabled) {
@@ -79,7 +95,7 @@ void SdlInputHandler::sendGamepadState(GamepadState* state)
     // When in single controller mode, merge all gamepad state together
     if (!m_MultiController) {
         for (int i = 0; i < MAX_GAMEPADS; i++) {
-            if (m_GamepadState[i].index == state->index) {
+            if (m_GamepadState[i].index == state->index && !isForwardingRawHid(&m_GamepadState[i])) {
                 buttons |= m_GamepadState[i].buttons;
                 if (lt < m_GamepadState[i].lt) {
                     lt = m_GamepadState[i].lt;
@@ -117,6 +133,10 @@ void SdlInputHandler::sendGamepadBatteryState(GamepadState* state, SDL_JoystickP
 {
     uint8_t batteryPercentage;
     uint8_t batteryState;
+
+    if (isForwardingRawHid(state)) {
+        return;
+    }
 
     // SDL's battery reporting capabilities are quite limited. Notably, we cannot
     // tell the battery level while charging (or even if a battery is present).
@@ -397,8 +417,10 @@ void SdlInputHandler::handleControllerButtonEvent(SDL_ControllerButtonEvent* eve
         SDL_PushEvent(&event);
 
         // Clear buttons down on this gamepad
-        LiSendMultiControllerEvent(state->index, m_GamepadMask,
-                                   0, 0, 0, 0, 0, 0, 0);
+        if (!isForwardingRawHid(state)) {
+            LiSendMultiControllerEvent(state->index, m_GamepadMask,
+                                       0, 0, 0, 0, 0, 0, 0);
+        }
         return;
     }
 
@@ -412,8 +434,10 @@ void SdlInputHandler::handleControllerButtonEvent(SDL_ControllerButtonEvent* eve
                                                             !Session::get()->getOverlayManager().isOverlayEnabled(Overlay::OverlayDebug));
 
         // Clear buttons down on this gamepad
-        LiSendMultiControllerEvent(state->index, m_GamepadMask,
-                                   0, 0, 0, 0, 0, 0, 0);
+        if (!isForwardingRawHid(state)) {
+            LiSendMultiControllerEvent(state->index, m_GamepadMask,
+                                       0, 0, 0, 0, 0, 0, 0);
+        }
         return;
     }
 
@@ -428,7 +452,7 @@ void SdlInputHandler::handleControllerButtonEvent(SDL_ControllerButtonEvent* eve
 void SdlInputHandler::handleControllerSensorEvent(SDL_ControllerSensorEvent* event)
 {
     GamepadState* state = findStateForGamepad(event->which);
-    if (state == NULL) {
+    if (state == NULL || isForwardingRawHid(state)) {
         return;
     }
 
@@ -463,7 +487,7 @@ void SdlInputHandler::handleControllerSensorEvent(SDL_ControllerSensorEvent* eve
 void SdlInputHandler::handleControllerTouchpadEvent(SDL_ControllerTouchpadEvent* event)
 {
     GamepadState* state = findStateForGamepad(event->which);
-    if (state == NULL) {
+    if (state == NULL || isForwardingRawHid(state)) {
         return;
     }
 
@@ -760,6 +784,11 @@ void SdlInputHandler::handleControllerDeviceEvent(SDL_ControllerDeviceEvent* eve
 #endif
             type == LI_CTYPE_PS;
 
+#if SDL_VERSION_ATLEAST(2, 24, 0)
+        // The host creates its own device for a forwarded controller when its
+        // first raw report arrives, so it must not see a gamepad arrive too
+        if (!startRawHidPassthrough(state, vendorId, productId))
+#endif
         LiSendControllerArrivalEvent(state->index, m_GamepadMask, type, supportedButtonFlags, capabilities);
 #else
 
@@ -780,6 +809,7 @@ void SdlInputHandler::handleControllerDeviceEvent(SDL_ControllerDeviceEvent* eve
                 SDL_RemoveTimer(state->mouseEmulationTimer);
             }
 
+            stopRawHidPassthrough(state);
             SDL_GameControllerClose(state->controller);
 
 #if !SDL_VERSION_ATLEAST(2, 0, 9)
@@ -975,6 +1005,128 @@ void SdlInputHandler::setAdaptiveTriggers(uint16_t controllerNumber, DualSenseOu
 #endif
 
     SDL_free(report);
+}
+
+// Valve's 2026 Steam Controller, wired or through its wireless puck. Its trackpads, grips
+// and capacitive sticks only reach the host's games and Steam Input intact if the host
+// presents the real device, so hosts that can do that get its raw HID reports instead.
+static bool isRawHidPassthroughController(uint16_t vendorId, uint16_t productId)
+{
+    return vendorId == 0x28de && (productId == 0x1302 || productId == 0x1304 || productId == 0x1305);
+}
+
+bool SdlInputHandler::startRawHidPassthrough(GamepadState* state, uint16_t vendorId, uint16_t productId)
+{
+#if SDL_VERSION_ATLEAST(2, 24, 0)
+    if (!(LiGetHostFeatureFlags() & LI_FF_RAW_HID_REPORTS) || !isRawHidPassthroughController(vendorId, productId)) {
+        return false;
+    }
+
+    // For HIDAPI gamepads this is the HID device of the controller's own interface
+    // (one per puck slot). A second handle doesn't take the device away from SDL.
+    const char* path = SDL_GameControllerPath(state->controller);
+    if (path == nullptr || SDL_hid_init() != 0) {
+        return false;
+    }
+
+    state->rawHidDevice = SDL_hid_open_path(path, SDL_FALSE);
+    if (state->rawHidDevice == nullptr) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "Unable to open %s for raw HID passthrough: %s",
+                    path, SDL_GetError());
+        SDL_hid_exit();
+        return false;
+    }
+
+    state->rawHidVendorId = vendorId;
+    state->rawHidProductId = productId;
+    SDL_AtomicSet(&state->rawHidStop, 0);
+    state->rawHidThread = SDL_CreateThread(rawHidReaderThread, "Raw HID", state);
+    if (state->rawHidThread == nullptr) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "Unable to create raw HID thread: %s",
+                     SDL_GetError());
+        SDL_hid_close(state->rawHidDevice);
+        state->rawHidDevice = nullptr;
+        SDL_hid_exit();
+        return false;
+    }
+
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "Forwarding raw HID reports of gamepad %d (%s)",
+                state->index, path);
+    return true;
+#else
+    Q_UNUSED(state);
+    Q_UNUSED(vendorId);
+    Q_UNUSED(productId);
+    return false;
+#endif
+}
+
+void SdlInputHandler::stopRawHidPassthrough(GamepadState* state)
+{
+#if SDL_VERSION_ATLEAST(2, 24, 0)
+    if (state->rawHidDevice == nullptr) {
+        return;
+    }
+
+    SDL_AtomicSet(&state->rawHidStop, 1);
+    SDL_WaitThread(state->rawHidThread, nullptr);
+    SDL_hid_close(state->rawHidDevice);
+    SDL_hid_exit();
+    state->rawHidThread = nullptr;
+    state->rawHidDevice = nullptr;
+#else
+    Q_UNUSED(state);
+#endif
+}
+
+int SdlInputHandler::rawHidReaderThread(void* context)
+{
+#if SDL_VERSION_ATLEAST(2, 24, 0)
+    GamepadState* state = (GamepadState*)context;
+    unsigned char report[LI_MAX_RAW_HID_REPORT_SIZE];
+
+    // The timeout bounds how long stopRawHidPassthrough() waits for us
+    while (!SDL_AtomicGet(&state->rawHidStop)) {
+        int length = SDL_hid_read_timeout(state->rawHidDevice, report, sizeof(report), 100);
+        if (length < 0) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "Raw HID read failed on gamepad %d",
+                        state->index);
+            break;
+        }
+        else if (length > 0) {
+            LiSendRawHidReport((uint8_t)state->index, state->rawHidVendorId, state->rawHidProductId,
+                               report, (uint16_t)length);
+        }
+    }
+#else
+    Q_UNUSED(context);
+#endif
+
+    return 0;
+}
+
+void SdlInputHandler::rawHidOutput(uint16_t controllerNumber, const uint8_t* report, uint16_t reportLength)
+{
+#if SDL_VERSION_ATLEAST(2, 24, 0)
+    for (int i = 0; i < MAX_GAMEPADS; i++) {
+        if (m_GamepadState[i].index == controllerNumber && m_GamepadState[i].rawHidDevice != nullptr) {
+            if (SDL_hid_write(m_GamepadState[i].rawHidDevice, report, reportLength) < 0) {
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                            "Raw HID write failed on gamepad %d",
+                            controllerNumber);
+            }
+            return;
+        }
+    }
+#else
+    Q_UNUSED(controllerNumber);
+    Q_UNUSED(report);
+    Q_UNUSED(reportLength);
+#endif
 }
 
 QString SdlInputHandler::getUnmappedGamepads()

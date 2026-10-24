@@ -229,6 +229,7 @@ SdlInputHandler::~SdlInputHandler()
         }
 #endif
         if (m_GamepadState[i].controller != nullptr) {
+            stopRawHidPassthrough(&m_GamepadState[i]);
             SDL_GameControllerClose(m_GamepadState[i].controller);
         }
     }
