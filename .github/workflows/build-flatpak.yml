@@ -1,0 +1,43 @@
+name: Build Flatpak
+
+# Builds this branch with the Flathub manifest (flatpak/), producing a bundle that
+# installs over the Flathub app of the same id.
+on:
+  push:
+    branches: [steam-controller-passthrough]
+  workflow_dispatch:
+
+jobs:
+  flatpak:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install flatpak-builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
+      - name: Cache dependency builds
+        uses: actions/cache@v4
+        with:
+          path: .flatpak-builder
+          key: flatpak-builder-${{ hashFiles(flatpak/*) }}
+
+      - name: Build
+        run: >
+          flatpak-builder --user --install-deps-from=flathub --disable-rofiles-fuse
+          --repo=repo --force-clean build flatpak/com.moonlight_stream.Moonlight.json
+
+      - name: Bundle
+        run: >
+          flatpak build-bundle repo moonlight.flatpak com.moonlight_stream.Moonlight
+          --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: moonlight-flatpak
+          path: moonlight.flatpak
