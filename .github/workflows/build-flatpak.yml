@@ -11,7 +11,7 @@ jobs:
   flatpak:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
 
@@ -22,7 +22,7 @@ jobs:
           flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 
       - name: Cache dependency builds
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .flatpak-builder
           key: flatpak-builder-${{ hashFiles(flatpak/*) }}
@@ -37,7 +37,7 @@ jobs:
           flatpak build-bundle repo moonlight.flatpak com.moonlight_stream.Moonlight
           --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: moonlight-flatpak
           path: moonlight.flatpak
