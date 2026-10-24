@@ -202,7 +202,13 @@
 			"sources": [
 				{
 					"type": "dir",
-					"path": ".."
+					"path": "..",
+					"skip": [
+						".flatpak-builder",
+						"flatpak_app",
+						"repo",
+						"moonlight.flatpak"
+					]
 				}
 			]
 		}
