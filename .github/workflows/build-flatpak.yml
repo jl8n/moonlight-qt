@@ -25,7 +25,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: .flatpak-builder
-          key: flatpak-builder-${{ hashFiles(flatpak/*) }}
+          key: flatpak-builder-${{ hashFiles('flatpak/*') }}
 
       - name: Build
         run: >
