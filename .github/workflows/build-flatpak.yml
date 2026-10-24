@@ -20,21 +20,25 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y flatpak flatpak-builder
           flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          # Ubuntu 24.04 blocks the unprivileged user namespaces bubblewrap needs
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - name: Cache dependency builds
         uses: actions/cache@v5
         with:
-          path: .flatpak-builder
+          path: ${{ runner.temp }}/flatpak-builder
           key: flatpak-builder-${{ hashFiles('flatpak/*') }}
 
+      # Keep builder state outside the checkout, which the manifest copies as its source
       - name: Build
         run: >
           flatpak-builder --user --install-deps-from=flathub --disable-rofiles-fuse
-          --repo=repo --force-clean build flatpak/com.moonlight_stream.Moonlight.json
+          --state-dir=${{ runner.temp }}/flatpak-builder --repo=${{ runner.temp }}/repo
+          --force-clean ${{ runner.temp }}/build flatpak/com.moonlight_stream.Moonlight.json
 
       - name: Bundle
         run: >
-          flatpak build-bundle repo moonlight.flatpak com.moonlight_stream.Moonlight
+          flatpak build-bundle ${{ runner.temp }}/repo moonlight.flatpak com.moonlight_stream.Moonlight
           --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo
 
       - uses: actions/upload-artifact@v6
